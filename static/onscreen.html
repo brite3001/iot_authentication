@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <title>Drawn Apart - Onscreen Demo</title>
+</head>
+
+<body translate="no">
+  <h1>Drawn Apart - Onscreen Demo</h1>
+  For more info: see <a href="https://github.com/drawnapart/drawnapart">https://github.com/drawnapart/drawnapart</a>
+  <br>
+  <br>
+  <pre id="results"></pre>
+  <canvas id="myCanvas"></canvas>
+
+  <script>
+    // Get the full query string
+    var queryString = window.location.search;
+
+    // Empty object to store parameters
+    var params = {};
+
+    if (queryString) {
+      // Remove the leading ? from the query string  
+      queryString = queryString.substring(1);
+
+      // Split into key/value pairs
+      var parts = queryString.split('&');
+
+      for (var i = 0; i < parts.length; i++) {
+        // Further split the pair into key and value
+        var keyValuePair = parts[i].split('=');
+        var key = keyValuePair[0];
+        var value = keyValuePair[1];
+
+        // Decode the key and value from URL encoding
+        key = decodeURIComponent(key);
+        value = decodeURIComponent(value);
+
+        // Add to the parameters object    
+        params[key] = value;
+      }
+    }
+
+    console.log(params['device_id']);
+    console.log(params['malicious']);
+
+    var stallVertexIdLocation, gl;
+    var numOfVertices = 7;
+
+
+    // DRAWNAPART code here
+    const fragment_code =
+      `#version 300 es
+    precision mediump float;
+    out vec4 outColor;
+    
+    void main(void)
+    {
+        outColor = vec4(1,0,0,1);
+    }
+    `;
+
+    const vertex_code =
+      `#version 300 es
+  uniform int cur_stalled_vertex;
+
+    float stall_function()
+    {
+        float res = 0.01;
+    
+        for(int i =1; i < 0xfffff; i++)
+        {
+            res = sinh(res);
+        }
+        return res;
+    }            
+    
+    void main(void)
+    {
+      if (cur_stalled_vertex  == gl_VertexID) {
+        gl_Position = vec4(stall_function(),0, 1,1);
+      } else {
+        gl_Position = vec4(0,0, 1,1);
+      }
+
+        gl_PointSize = 1.0; 
+    
+    }
+    `;
+
+    function awaitAnimationFrame() {
+      let resolve = null;
+      const promise = new Promise(r => resolve = r);
+      window.requestAnimationFrame(resolve);
+      return promise;
+    }
+
+
+    async function measureVertex(gl, vertexIndex) {
+      // Configure the stalled vertex index
+      gl.uniform1i(stallVertexIdLocation, vertexIndex);
+      gl.drawArrays(gl.POINTS, 0, numOfVertices);
+
+
+      // Measure time
+      var beforeRender = performance.now();
+      await awaitAnimationFrame();
+      var afterRender = performance.now();
+
+      return { performanceNow: afterRender - beforeRender };
+    }
+
+
+
+    async function prepareAndGo() {
+      // Initalize the offscreen canvas
+      gl = document.getElementById('myCanvas').getContext("webgl2", { antialias: false });
+
+
+      // Prepare to draw
+      prepareToDraw(gl, numOfVertices);
+
+      var fingerprints = [];
+
+      fingerprints.push([params['device_id'], params['malicious']])
+
+      for (let i = 0; i < 8; i++) {
+        console.log('DRAW!' + i);
+        fingerprints.push(await go(gl));
+      }
+
+      console.log(fingerprints);
+
+      // Convert the array of strings into a string first then convert it to a Blob.
+      const resultString = JSON.stringify(fingerprints); // Replace 'array' with your array variable name.
+      const data = new Blob([resultString], { type: 'text/plain' });
+
+      const formData = new FormData();
+      formData.append('file', data);
+
+      await fetch('http://localhost:8000/authentication', { // Replace with your backend endpoint URL
+        method: 'POST',
+        body: formData,
+      })
+        .then(response => response.json())
+        .then(data => console.log(data))
+        .catch((error) => {
+          console.error('Error:', error);
+        });
+
+      console.log("Fingerprints Sent");
+      location.reload();
+
+
+    }
+
+    function prepareToDraw(gl, vertexCount) {
+
+      var vertShader = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vertShader, vertex_code);
+      gl.compileShader(vertShader);
+      var compiled = gl.getShaderParameter(vertShader, gl.COMPILE_STATUS);
+      if (!compiled) {
+        console.error(gl.getShaderInfoLog(vertShader));
+      }
+
+      // Fragment shader
+      var fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fragShader, fragment_code);
+      gl.compileShader(fragShader);
+      compiled = gl.getShaderParameter(fragShader, gl.COMPILE_STATUS);
+      if (!compiled) {
+        console.error(gl.getShaderInfoLog(fragShader));
+      }
+
+      var shaderProgram = gl.createProgram();
+      gl.attachShader(shaderProgram, vertShader);
+      gl.attachShader(shaderProgram, fragShader);
+      gl.linkProgram(shaderProgram);
+      gl.useProgram(shaderProgram);
+
+      stallVertexIdLocation = gl.getUniformLocation(shaderProgram, "cur_stalled_vertex");
+
+    }
+
+
+    async function go(gl) {
+      var startTime = performance.now();
+      var tracesConvertToBlob = new Array;
+
+      // For each vertex
+      for (vertexId = 0; vertexId < numOfVertices; vertexId++) {
+        var stallTime = await measureVertex(gl, vertexId);
+        tracesConvertToBlob.push(stallTime);
+      }
+
+      var endTime = performance.now();
+
+      resultString = "";
+
+      for (let i = 0; i < tracesConvertToBlob.length; i++) {
+        resultString += tracesConvertToBlob[i].performanceNow.toFixed(3) + "\n";
+      }
+
+      document.getElementById("results").innerText = resultString;
+
+
+
+      return resultString;
+    }
+
+
+    window.onload = prepareAndGo;
+
+    function again() {
+      go(gl);
+    }
+  </script>
+
+
+
+</body>
+
+</html>
